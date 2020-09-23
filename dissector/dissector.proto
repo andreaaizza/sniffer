@@ -1,0 +1,91 @@
+syntax = "proto3";
+package dissector;
+
+import "google/protobuf/timestamp.proto";
+
+// Dissector
+message DissectorBuffer {
+	repeated TimedByte timedBytes = 1;
+}
+
+message TimedByte {
+	google.protobuf.Timestamp time = 1;
+	uint32 byte = 2; // 8bit
+}
+
+// Modbus
+// http://www.modbus.org/docs/Modbus_Application_Protocol_V1_1b.pdf
+
+// Function Code, 16bit
+enum FunctionCode {
+	FuncCodeNouse                      = 0; // unused, protobuf3 requirement
+	FuncCodeReadInputRegisters         = 4;
+	FuncCodeReadHoldingRegisters       = 3;
+	FuncCodeWriteSingleRegister        = 6;
+	FuncCodeWriteMultipleRegisters     = 16;
+	FuncCodeReadWriteMultipleRegisters = 23;
+	FuncCodeMaskWriteRegister          = 22;
+	FuncCodeReadFIFOQueue              = 24;
+}
+
+// Exception Code, 8bit
+enum ExceptionCode {
+	ExceptionCodeNouse                              = 0; // unused, protobuf3 requirement
+	ExceptionCodeIllegalFunction                    = 1;
+	ExceptionCodeIllegalDataAddress                 = 2;
+	ExceptionCodeIllegalDataValue                   = 3;
+	ExceptionCodeServerDeviceFailure                = 4;
+	ExceptionCodeAcknowledge                        = 5;
+	ExceptionCodeServerDeviceBusy                   = 6;
+	ExceptionCodeMemoryParityError                  = 8;
+	ExceptionCodeGatewayPathUnavailable             = 10;
+	ExceptionCodeGatewayTargetDeviceFailedToRespond = 11;
+}
+
+// from logging: 
+// OK
+// 2020/09/14 08:45:54 02040000000A703E [002 004 000 000 000 010 112 062]
+// 2020/09/14 08:45:54 0204148003800380 [002 004 020 128 003 128 003 128]
+// 2020/09/14 08:45:54 0180018001800300 [001 128 001 128 001 128 003 000]
+// 2020/09/14 08:45:54 3780038003800390 [055 128 003 128 003 128 003 144]
+// 2020/09/14 08:45:54 1F [031]
+// ERROR
+// 2020/09/14 08:45:56 02030000000AC5FE [002 003 000 000 000 010 197 254]
+// 2020/09/14 08:45:56 02830230F1 [002 131 002 048 241]
+// 2020/09/14 08:45:58 02030000000AC5FE [002 003 000 000 000 010 197 254]
+// 2020/09/14 08:45:58 02830230F1 [002 131 002 048 241]
+
+// ADU, Application Data Unit
+// max size is 256 bytes
+message ADU {
+	uint32 address = 1; // 8bit
+	oneof PDU {
+		PDURequest pduRequest = 2;
+		PDUResponse pduResponse = 3;
+		PDUResponseException pduResponseException = 4;
+	}
+	uint32 crc16 = 15; // 16bit CRC
+	google.protobuf.Timestamp time = 16;
+}
+
+// PDU, Protocol Data Unit
+// max size is 253 bytes
+message PDURequest {
+	uint32 functionCode = 1; // 8bit
+	bytes data = 2;
+}
+message PDUResponse {
+	uint32 functionCode = 1; // 8bit
+	bytes data = 2;
+}
+message PDUResponseException {
+	uint32 functionExceptionCode = 1; // 8bit
+	uint32 exceptionCode = 2;
+}
+message Result {
+	ADU request = 1;
+	ADU reponse = 2;
+}
+message Results {
+	repeated Result results = 1;
+}

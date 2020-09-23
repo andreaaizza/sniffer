@@ -1,0 +1,15 @@
+syntax = "proto3";
+package logger;
+
+import "google/protobuf/timestamp.proto";
+
+// Logger
+message LoggerBuffer {
+	repeated DataUnit dataUnit = 1;
+}
+
+message DataUnit {
+	google.protobuf.Timestamp time = 1;
+	bytes data = 2;
+}
+

@@ -26,6 +26,8 @@ type Config struct {
 	FrameFormat string
 
 	FlushAfterSeconds int
+
+	Debug bool
 }
 
 type Logger struct {
@@ -65,6 +67,10 @@ func (l *Logger) getSerialConfig() (c *serial.Config, err error) {
 		par = serial.ParityEven
 	case "O":
 		par = serial.ParityOdd
+	case "M": // TODO
+		par = serial.ParityMark
+	case "S": // TODO
+		par = serial.ParitySpace
 	default:
 		err = fmt.Errorf("invalid frame string")
 		return
@@ -75,6 +81,8 @@ func (l *Logger) getSerialConfig() (c *serial.Config, err error) {
 		stp = serial.Stop1
 	case "2":
 		stp = serial.Stop2
+	case "15":
+		stp = serial.Stop1Half
 	default:
 		err = fmt.Errorf("invalid stop bits")
 		return
@@ -129,7 +137,7 @@ func (lb LoggerBuffer) PrettyString() (s string) {
 }
 
 func (du DataUnit) PrettyString() string {
-	return fmt.Sprintf("[%v]%02X", du.GetTime().Seconds, du.GetData())
+	return fmt.Sprintf("[%v]%02X[%03d]", util.TimeBuilder(*du.GetTime()).UnixNano(), du.GetData(), len(du.GetData()))
 }
 
 // initLoggerBuffer builds new and starts collecting data
@@ -178,6 +186,10 @@ func (l *Logger) initLoggerBuffer() (err error) {
 				// feed consumers
 				for _, c := range l.consumers {
 					c <- du
+
+					if l.config.Debug {
+						log.Print("Data received: ", du.PrettyString())
+					}
 				}
 
 				// Flush every time new data is received

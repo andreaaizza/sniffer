@@ -21,7 +21,7 @@ func main() {
 
 	// flag
 	port := flag.String("d", "/dev/ttyAPP3", "port")
-	baud := flag.Int64("b", 9600, "baud")
+	baud := flag.Int("b", 9600, "baud")
 	frame := flag.String("f", "8N1", "frame config (e.g. \"8N1\")")
 	debug := flag.Bool("debug", false, "debug")
 	runFor := flag.Int("s", 0, "exit after [seconds]")
@@ -33,12 +33,12 @@ func main() {
 	// scan only?
 	if *scanOnly {
 		fmt.Printf("Scanning port %s...\n", *port)
-		c := sniffer.ScanPort(*port, *scanEachPortSeconds)
+		c := sniffer.ScanPort(*port, baud, frame, *scanEachPortSeconds, *debug)
 		if c != nil {
 			fmt.Printf("Found! Received valid data port=%s baud=%d frame=%s\n", c.Port, c.Baud, c.FrameFormat)
 			os.Exit(0)
 		}
-		fmt.Print("No valid config found")
+		fmt.Print("No valid config found\n")
 		os.Exit(1)
 	}
 

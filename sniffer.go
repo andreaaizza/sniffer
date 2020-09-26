@@ -10,8 +10,22 @@ import (
 )
 
 // Modbus data for scanning, most frequent first
-var ModbusSpeeds = []int{38400, 9600, 19200, 1200, 2400, 4800, 57600, 115200}
-var ModbusFrame = []string{"8N1", "8N2"}
+var ModbusSpeeds = []int{9600, 19200, 38400, 115200, 57600, 4800, 2400, 1200}
+
+func allModbusFrames() (frames []string) {
+	frames = make([]string, 0)
+	b := []string{"8", "7"}
+	p := []string{"N", "E", "O"}
+	s := []string{"1", "2", "15"}
+	for _, bb := range b {
+		for _, pp := range p {
+			for _, ss := range s {
+				frames = append(frames, bb+pp+ss)
+			}
+		}
+	}
+	return
+}
 
 type Sniffer struct {
 	logger    *logger.Logger
@@ -67,9 +81,14 @@ func (s *Sniffer) ProtoBytes() (b []byte, err error) {
 
 // Scan for Modbus RTU valid serial port configuration
 // connect one 485 line to an active line with traffic to run this
-func ScanPort(port string, scanForSeconds int) *logger.Config {
-	for _, c := range buildConfigs(port) {
+func ScanPort(port string, speed *int, frame *string, scanForSeconds int, debug bool) *logger.Config {
+	for _, c := range buildConfigs(port, speed, frame) {
 		// create sniffer and try finding results for limited time
+		if debug {
+			c.Debug = true
+		} else {
+			c.Debug = false
+		}
 		err := tryConfig(c, scanForSeconds)
 		if err == nil {
 			return c
@@ -79,11 +98,15 @@ func ScanPort(port string, scanForSeconds int) *logger.Config {
 }
 
 // buildConfigs builds all possible configs with specific port and speed/frame combinations
-func buildConfigs(port string) (cc []*logger.Config) {
+func buildConfigs(port string, thisSpeed *int, thisFrame *string) (cc []*logger.Config) {
 	cc = make([]*logger.Config, 0)
 	for _, speed := range ModbusSpeeds {
-		for _, frame := range ModbusFrame {
-			cc = append(cc, &logger.Config{Port: port, Baud: speed, FrameFormat: frame, FlushAfterSeconds: 0})
+		if thisSpeed != nil && *thisSpeed == speed {
+			for _, frame := range allModbusFrames() {
+				if thisFrame != nil && *thisFrame == frame {
+					cc = append(cc, &logger.Config{Port: port, Baud: speed, FrameFormat: frame, FlushAfterSeconds: 0})
+				}
+			}
 		}
 	}
 	return

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -12,9 +13,6 @@ import (
 )
 
 func main() {
-	// logging flags
-	log.SetFlags(log.Lshortfile | log.Ltime)
-
 	sData := os.Args[1]
 	ss := strings.Split(sData, " ")
 	b := make([]byte, 0)
@@ -33,6 +31,6 @@ func main() {
 	}
 
 	for _, rr := range r.GetResults() {
-		log.Print(rr.PrettyString())
+		fmt.Print(rr.PrettyString(), "\n")
 	}
 }

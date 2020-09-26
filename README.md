@@ -1,8 +1,7 @@
 # Introduction
-This is a Modbus RTU sniffer, which can be utilized to passively read traffic
-from a RS-485/422 serial line. It also provides the capability of scanning 
-to identify the valid speed and serial frame configuration the Modbus RTU 
-bus. 
+This is a Modbus RTU sniffer, which can be utilized to passively read traffic from a RS-485 half-duplex serial line (transmit and receive on the same single serial line). It also provides the capability of scanning to identify the valid speed and serial frame configuration the Modbus RTU bus; a scan is successful in case both a request and the corresponding response are found. 
+
+A scan with `debug` flag can be utilized to read serial data from duplex lines, but niether Modbus data is not decoded nor scan succeeds.
 
 This is tested on `linux` (also `GOARCH=arm`), can be extended to `windows`. 
 
@@ -16,8 +15,7 @@ go install ./cmd/snifferModbusRTU
 ```
 
 # Examples
-Connect to a RS-485/422 serial bus (you will possibly need a hardware 
-converter) with active traffic. Assuming port is `/dev/ttyUSB0`.
+Connect to a RS-485 serial half-duples bus (you might possibly need a hardware converter) with active traffic. Assuming port is `/dev/ttyUSB0`.
 
 Scan port for all speed/frame combinations:
 ```
@@ -42,6 +40,9 @@ Sniff traffic:
 snifferModbusRTU -d /dev/ttyUSB0 -b 38400 -f 8N1
 ...
 ```
+
+# TODO
+* add full duplex lines support (needs two 485 serial ports)
 
 # License
 See LICENSE file

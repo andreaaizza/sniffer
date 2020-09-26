@@ -19,15 +19,27 @@ go install ./cmd/snifferModbusRTU
 Connect to a RS-485/422 serial bus (you will possibly need a hardware 
 converter) with active traffic. Assuming port is `/dev/ttyUSB0`.
 
-Scan port:
+Scan port for all speed/frame combinations:
 ```
-snifferModbusRTU -d /dev/ttyS0 -scan
+snifferModbusRTU -d /dev/ttyUSB0 -scan
+...
+```
+
+Scan port for all frame combinations using always `9600` baud:
+```
+snifferModbusRTU -d /dev/ttyUSB0 -b 9600 -scan
+...
+```
+
+Scan port for all speeds using always `8N1` frame:
+```
+snifferModbusRTU -d /dev/ttyUSB0 -f 8N1 -scan
 ...
 ```
 
 Sniff traffic:
 ```
-snifferModbusRTU -d /dev/ttyS0 -b 38400 -f 8N1
+snifferModbusRTU -d /dev/ttyUSB0 -b 38400 -f 8N1
 ...
 ```
 

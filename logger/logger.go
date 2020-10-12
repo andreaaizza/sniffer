@@ -16,8 +16,10 @@ const (
 )
 
 const (
-	// FlushAfterSecondsModbusRTU flush data from logger, if data older than this [seconds]
-	FlushAfterSecondsModbusRTU = 10
+	// LoggerFlushAfterSecondsModbusRTU flush data from logger, if data older than this [seconds]
+	LoggerFlushAfterSecondsModbusRTU = 10
+
+	LoggerFlushAfterSecondsMax = LoggerFlushAfterSecondsModbusRTU
 )
 
 type Config struct {
@@ -40,8 +42,18 @@ type Logger struct {
 	config Config
 }
 
+func (c *Config) PrettyString() string {
+	return fmt.Sprintf("port: %s, baud: %d, frame format: %s", c.Port, c.Baud, c.FrameFormat)
+}
+
 // New builds new logger with specified Config
 func New(c *Config) (l *Logger, err error) {
+	// set FlushAfterSeconds
+	if c.FlushAfterSeconds > LoggerFlushAfterSecondsMax {
+		log.Printf("Limiting FlushAfterSeconds to %d", LoggerFlushAfterSecondsMax)
+		c.FlushAfterSeconds = LoggerFlushAfterSecondsMax
+	}
+
 	consumers := make([]chan DataUnit, 0)
 	l = &Logger{
 		consumers: consumers,
@@ -106,7 +118,7 @@ func (l *Logger) Subscribe(c chan DataUnit) {
 // Close closes
 func (l *Logger) Close() {
 	// unsubscribe
-	l.Unsubscribe()
+	//l.Unsubscribe()
 
 	// terminate go routing
 	close(l.stop)
@@ -125,19 +137,19 @@ func (l *Logger) Close() {
 }
 
 // Size in bytes
-func (lb LoggerBuffer) Size() int {
+func (lb *LoggerBuffer) Size() int {
 	return len(lb.DataUnit)
 }
 
-func (lb LoggerBuffer) PrettyString() (s string) {
+func (lb *LoggerBuffer) PrettyString() (s string) {
 	for _, du := range lb.GetDataUnit() {
 		s += du.PrettyString()
 	}
 	return s
 }
 
-func (du DataUnit) PrettyString() string {
-	return fmt.Sprintf("[%v]%02X[%03d]", util.TimeBuilder(*du.GetTime()).UnixNano(), du.GetData(), len(du.GetData()))
+func (du *DataUnit) PrettyString() string {
+	return fmt.Sprintf("[%v]%02X[%03d]", util.TimeBuilder(du.GetTime()).UnixNano(), du.GetData(), len(du.GetData()))
 }
 
 // initLoggerBuffer builds new and starts collecting data
@@ -204,12 +216,9 @@ func (l *Logger) initLoggerBuffer() (err error) {
 // flush flushes
 func (l *Logger) flush() {
 	to := l.config.FlushAfterSeconds
-	if to == 0 {
-		return
-	}
 	for i := len(l.DataUnit) - 1; i > 0; i-- {
 		t := time.Now().UTC()
-		td := util.TimeBuilder(*l.DataUnit[i].GetTime())
+		td := util.TimeBuilder(l.DataUnit[i].GetTime())
 		if t.After(td.Add(time.Duration(to) * time.Second)) {
 			//log.Print("Flushing logging buffer: ", l.DataUnit[i]) //LOG
 			l.DataUnit = l.DataUnit[:i]

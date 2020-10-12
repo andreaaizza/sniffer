@@ -6,7 +6,7 @@ import (
 	"github.com/golang/protobuf/ptypes/timestamp"
 )
 
-func TimeBuilder(timestamp timestamp.Timestamp) time.Time {
+func TimeBuilder(timestamp *timestamp.Timestamp) time.Time {
 	return time.Unix(timestamp.GetSeconds(), int64(timestamp.GetNanos()))
 }
 

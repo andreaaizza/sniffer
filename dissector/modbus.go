@@ -21,7 +21,8 @@ const (
 // NewADU builds an ADU from DissectorBuffer at position index. Returns err==nil on success
 // Can be utilized to check if there is a ADU at specific position, also in cobination with
 // IsRequest(), IsResponse(), IsException()
-func (adu *ADU) NewADU(db *DissectorBuffer, index int) (err error) {
+func NewADU(db *DissectorBuffer, index int) (adu *ADU, err error) {
+	adu = &ADU{}
 
 	// try building Request
 	// 02040000000A703E 0204148003800380018001800180030037800380038003901F
@@ -43,7 +44,7 @@ func (adu *ADU) NewADU(db *DissectorBuffer, index int) (err error) {
 
 	adu.Address = db.TimedBytes[index].GetByte()
 	adu.PDU = &ADU_PduRequest{PduRequest: &pduRequest}
-	if err = adu.setCRC(*db, index+ADUSizePDURequest-2); err != nil {
+	if err = adu.setCRC(db, index+ADUSizePDURequest-2); err != nil {
 		return
 	}
 	adu.Time = db.TimedBytes[index].GetTime()
@@ -72,7 +73,7 @@ func (adu *ADU) NewADU(db *DissectorBuffer, index int) (err error) {
 	}
 	adu.Address = db.TimedBytes[index].GetByte()
 	adu.PDU = &ADU_PduResponse{PduResponse: &pduResponse}
-	if err = adu.setCRC(*db, index+3+int(dataLen)); err != nil {
+	if err = adu.setCRC(db, index+3+int(dataLen)); err != nil {
 		return
 	}
 	adu.Time = db.TimedBytes[index].GetTime()
@@ -89,7 +90,7 @@ func (adu *ADU) NewADU(db *DissectorBuffer, index int) (err error) {
 	}
 	adu.Address = db.TimedBytes[index].GetByte()
 	adu.PDU = &ADU_PduResponseException{PduResponseException: &pduResponseException}
-	if err = adu.setCRC(*db, index+3); err != nil {
+	if err = adu.setCRC(db, index+3); err != nil {
 		return
 	}
 	adu.Time = db.TimedBytes[index].GetTime()
@@ -103,21 +104,21 @@ func (adu *ADU) NewADU(db *DissectorBuffer, index int) (err error) {
 }
 
 // IsRequest return true if ADU is a Modbus Request
-func (adu ADU) IsRequest() bool {
+func (adu *ADU) IsRequest() bool {
 	return adu.checkCrc() == nil &&
 		adu.GetPduRequest() != nil &&
 		adu.GetPduRequest().GetFunctionCode()&0x80 == 0
 }
 
 // IsResponse return true if ADU is a Modbus Response without exceptions
-func (adu ADU) IsResponse() bool {
+func (adu *ADU) IsResponse() bool {
 	return adu.checkCrc() == nil &&
 		adu.GetPduResponse() != nil &&
 		adu.GetPduResponse().GetFunctionCode()&0x80 == 0
 }
 
 // IsException return true if ADU is a Modbus Response with exceptions
-func (adu ADU) IsException() bool {
+func (adu *ADU) IsException() bool {
 	return adu.checkCrc() == nil &&
 		adu.GetPduResponseException() != nil &&
 		adu.GetPduResponseException().GetFunctionExceptionCode()&0x80 == 0x80
@@ -135,7 +136,7 @@ func aduPDUResponseSizeFromDataLen(l int) int {
 }
 
 // Size returns ADU size in bytes, return 0 in case of error
-func (adu ADU) Size() int {
+func (adu *ADU) Size() int {
 	if adu.GetPduResponseException() != nil {
 		return ADUSizePDUResponseException
 	} else if adu.GetPduRequest() != nil {
@@ -147,7 +148,7 @@ func (adu ADU) Size() int {
 }
 
 // setCRC set CRC on DissectorBuffer position
-func (adu *ADU) setCRC(db DissectorBuffer, position int) (err error) {
+func (adu *ADU) setCRC(db *DissectorBuffer, position int) (err error) {
 	b, err := db.bytes(position, 2)
 	if err != nil {
 		return err
@@ -157,7 +158,7 @@ func (adu *ADU) setCRC(db DissectorBuffer, position int) (err error) {
 }
 
 func (adu *ADU) PrettyString() (s string) {
-	s = fmt.Sprintf("[%v] %02X", util.TimeBuilder(*adu.GetTime()).Format(time.RFC3339), adu.GetAddress())
+	s = fmt.Sprintf("[%v] %02X", util.TimeBuilder(adu.GetTime()).Format(time.RFC3339), adu.GetAddress())
 	if adu.IsRequest() {
 		pdu := adu.GetPduRequest()
 		s += fmt.Sprintf("|REQ%02X|%02X", pdu.GetFunctionCode(), pdu.GetData())
@@ -180,7 +181,7 @@ func (adu *ADU) PrettyString() (s string) {
 }
 
 // checkCrc checks ADU CRC and return nil if success
-func (adu ADU) checkCrc() (err error) {
+func (adu *ADU) checkCrc() (err error) {
 	// get crc data for each PDU type
 	pdu_crc_data := make([]byte, 0)
 	if pduRequest := adu.GetPduRequest(); pduRequest != nil {
@@ -198,4 +199,8 @@ func (adu ADU) checkCrc() (err error) {
 		return nil
 	}
 	return fmt.Errorf("Invalid CRC")
+}
+
+func (adu *ADU) GetTimeTime() time.Time {
+	return util.TimeBuilder(adu.GetTime())
 }

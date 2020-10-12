@@ -1,50 +1,84 @@
 package dissector
 
 import (
-	"sync"
-
 	"github.com/andreaaizza/sniffer/logger"
 	"github.com/andreaaizza/sniffer/util"
 
 	"fmt"
 	"log"
 	"time"
-
-	"github.com/golang/protobuf/proto"
-	google_protobuf "github.com/golang/protobuf/ptypes/timestamp"
 )
 
 const (
 	// DBMaxSizeWithoutNotify if more DataUnits than this in the buffer, then notity
 	DBMaxSizeWithoutNotify = 4096
 
-	// FlushAfterSecondsModbusRTU flush data if older than this [seconds]
-	FlushAfterSecondsModbusRTU = 10
+	// DissectorFlushAfterSecondsModbusRTU flush data if older than this [seconds]
+	DissectorFlushAfterSecondsModbusRTU = 5
 )
+
+type ResultFilter interface {
+	validate(r *Result) bool
+}
+
+type FilterOnlyModbusRequest struct{}
+
+func (f FilterOnlyModbusRequest) validate(r *Result) bool {
+	return r.GetAdu().IsRequest()
+}
+
+type FilterOnlyModbusResponseOrException struct{}
+
+func (f FilterOnlyModbusResponseOrException) validate(r *Result) bool {
+	return r.GetAdu().IsResponse() || r.GetAdu().IsException()
+}
+
+type FilterAnyModbus struct{}
+
+func (f FilterAnyModbus) validate(r *Result) bool {
+	return true
+}
 
 type Dissector struct {
 	DissectorBuffer
-	Consumer   chan logger.DataUnit
-	Results    Results
-	resultsMux sync.Mutex
+	logger   *logger.Logger
+	Consumer chan logger.DataUnit
+
+	Producer chan Result
 
 	stop chan struct{}
 
-	FlushAfterSeconds int
+	flushDissectorAfterSeconds int
+
+	filter ResultFilter
 }
 
 // New builds new dissector and starts waiting for data.
 // DataUnits should be sent to GetConsumer() channel. Results can be fetched with GetResults(). Should be closed with Close() at the end.
-func New() *Dissector {
-	d := &Dissector{
+func New(c *logger.Config, filter ResultFilter) (d *Dissector, err error) {
+	// creates and starts logger
+	l, err := logger.New(c)
+	if err != nil {
+		return
+	}
+
+	d = &Dissector{
 		DissectorBuffer: DissectorBuffer{},
 		Consumer:        make(chan logger.DataUnit),
-		Results:         Results{},
+		logger:          l,
+
+		Producer: make(chan Result),
 
 		stop: make(chan struct{}, 0),
 
-		FlushAfterSeconds: FlushAfterSecondsModbusRTU,
+		flushDissectorAfterSeconds: DissectorFlushAfterSecondsModbusRTU,
 	}
+
+	// connect to logger
+	d.logger.Subscribe(d.GetConsumer())
+
+	// assign filter
+	d.filter = filter
 
 	go func() {
 		for {
@@ -52,19 +86,24 @@ func New() *Dissector {
 			case <-d.stop:
 				return
 			case du := <-d.Consumer:
-				d.loadDataUnit(du)
+				d.loadDataUnit(&du)
 
 				// dissect after each packet recevied
 				d.dissect()
 			}
 		}
 	}()
-	return d
+
+	return
 }
 
 // Close closes
 func (d *Dissector) Close() {
+	// close dissector
 	close(d.stop)
+
+	// close logger
+	d.logger.Close()
 }
 
 // GetConsumer return the channel to send DataUnits to
@@ -72,24 +111,17 @@ func (d *Dissector) GetConsumer() chan logger.DataUnit {
 	return d.Consumer
 }
 
-// ProtoBytes extracts results as protobuf Marshalled bytes
-func (d *Dissector) ProtoBytes() (b []byte, err error) {
-	b, err = proto.Marshal(&d.Results)
-	if err != nil {
-		return
-	}
-	return
-}
-
+/*
 // FlushResults clear results queue
 func (d *Dissector) FlushResults() {
 	d.resultsMux.Lock()
 	d.Results.Results = d.Results.Results[:0]
 	d.resultsMux.Unlock()
 }
+*/
 
 // loadDataUnit pushes DataUnit to dissector
-func (d *Dissector) loadDataUnit(du logger.DataUnit) {
+func (d *Dissector) loadDataUnit(du *logger.DataUnit) {
 	for _, dByte := range du.Data {
 		d.TimedBytes = append(d.TimedBytes, &TimedByte{Time: du.Time, Byte: uint32(dByte)})
 	}
@@ -97,15 +129,13 @@ func (d *Dissector) loadDataUnit(du logger.DataUnit) {
 
 // flushOldData flushes data if too old
 func (d *Dissector) flushOldData() {
-	if d.FlushAfterSeconds == 0 {
-		return
-	}
 	t := time.Now().UTC()
+
+	// TimedBytes
 	for i := len(d.TimedBytes) - 1; i > 0; i-- {
-		td := util.TimeBuilder(*d.TimedBytes[i].GetTime())
-		if t.After(td.Add(time.Duration(d.FlushAfterSeconds) * time.Second)) {
-			//log.Print("Flushing dissector buffer: ", d.TimedBytes[i]) //LOG
-			d.remove(i, 1)
+		td := util.TimeBuilder(d.TimedBytes[i].GetTime())
+		if t.After(td.Add(time.Duration(d.flushDissectorAfterSeconds) * time.Second)) {
+			d.removeTimedBytes(i, 1)
 		}
 	}
 }
@@ -119,7 +149,7 @@ func (d *Dissector) dissect() {
 			break
 		}
 
-		// flush old data
+		// flush old data from DissectorBuffer and Results
 		d.flushOldData()
 
 		if d.Size() > DBMaxSizeWithoutNotify {
@@ -130,28 +160,20 @@ func (d *Dissector) dissect() {
 
 // tries finding req->resp couple, returns true if success
 func (d *Dissector) dissectRound() bool {
-	req := ADU{}
 	// cycle thru each byte and search for a valid Request
 	for reqIndex, _ := range d.TimedBytes {
-		if req.NewADU(&d.DissectorBuffer, reqIndex) == nil && req.IsRequest() {
+		// try building ADU
+		if adu, err := NewADU(&d.DissectorBuffer, reqIndex); err == nil {
+			res := &Result{Adu: adu}
+			// validate
+			if d.filter.validate(res) {
+				// push to output
+				result := Result{Adu: res.GetAdu()}
+				d.Producer <- result
 
-			// find subsequent Response or Exeption
-			resp, respIndex, err := d.findModbusReply(reqIndex)
-			if err == nil {
-				// found couple Request --> { Response, Exception }
+				// remove relevant data from input
+				d.removeTimedBytes(reqIndex, res.GetAdu().Size())
 
-				// LOG
-				//log.Printf("MATCH: [%d]%s -> [%d]%s", reqIndex, req.PrettyString(), respIndex, resp.PrettyString()) // LOG
-				//log.Printf("[%03d]%s -> [%03d]%s\n", req.Size(), req.PrettyString(), resp.Size(), resp.PrettyString()) // LOG
-
-				// push to results
-				d.resultsMux.Lock()
-				d.Results.Results = append(d.Results.Results, &Result{Request: &req, Reponse: resp})
-				d.resultsMux.Unlock()
-
-				// REMOVE
-				d.remove(respIndex, resp.Size()) // first remove the newest bytes: the response, to not interfere with request (olded) removal
-				d.remove(reqIndex, req.Size())
 				return true
 			}
 		}
@@ -159,9 +181,9 @@ func (d *Dissector) dissectRound() bool {
 	return false
 }
 
-// remove removes `size` data from buffer at `start` position
-func (db *DissectorBuffer) remove(start int, size int) {
-	db.TimedBytes = append(db.TimedBytes[:start], db.TimedBytes[start+size:]...)
+// removeTimedBytes removes `size` data from buffer at `start` position
+func (d *Dissector) removeTimedBytes(start int, size int) {
+	d.TimedBytes = append(d.TimedBytes[:start], d.TimedBytes[start+size:]...)
 }
 
 /*
@@ -169,7 +191,7 @@ LB errors: [1600174478]020300090001543B[1600174478]02830230F1[1600174478]0203000
 */
 
 // bytes returns `size` []bytes from `start`
-func (db DissectorBuffer) bytes(start int, size int) (b []byte, err error) {
+func (db *DissectorBuffer) bytes(start int, size int) (b []byte, err error) {
 	if start+size > db.Size() {
 		err = fmt.Errorf("out of bounds")
 		return
@@ -182,16 +204,15 @@ func (db DissectorBuffer) bytes(start int, size int) (b []byte, err error) {
 
 // findModbusReply find suitable reply to PDURequest at index mdReqADUindex. Returns PDUResponse, position (success), PDUResponseException, 0 (err!=nil)
 func (db *DissectorBuffer) findModbusReply(mdReqADUindex int) (r *ADU, i int, err error) {
-	r = &ADU{}
-	reqADU := &ADU{}
-	if reqADU.NewADU(db, mdReqADUindex) != nil || !reqADU.IsRequest() {
-		err = fmt.Errorf("should find an ADU with valid PDURequest at index ", i)
+	var reqADU *ADU
+	if reqADU, err = NewADU(db, mdReqADUindex); err != nil || !reqADU.IsRequest() {
+		err = fmt.Errorf("should find an ADU with valid PDURequest at index %d", i)
 		log.Print(err)
 		return
 
 	}
 	for i = mdReqADUindex + reqADU.Size(); i < db.Size()-ADUMinSize; i++ {
-		if r.NewADU(db, i) != nil {
+		if r, err = NewADU(db, i); err != nil {
 			continue
 		}
 		// first try Reponse as it should be more frequent
@@ -221,19 +242,13 @@ func (db *DissectorBuffer) findModbusReply(mdReqADUindex int) (r *ADU, i int, er
 }
 
 // Size in [TimedBytes]
-func (db DissectorBuffer) Size() int {
+func (db *DissectorBuffer) Size() int {
 	return len(db.TimedBytes)
 }
 
-func (db DissectorBuffer) PrettyString() (s string) {
-	t := google_protobuf.Timestamp{}
-	t.Seconds = 0
-	t.Nanos = 0
+func (db *DissectorBuffer) PrettyString() (s string) {
 	for _, td := range db.GetTimedBytes() {
-		if td.Time.Seconds > t.Seconds && td.Time.Nanos > t.Nanos {
-			t = *td.Time
-			s += fmt.Sprintf("[%v]", util.TimeBuilder(*td.Time).Format(time.RFC3339))
-		}
+		s += fmt.Sprintf("[%v]", util.TimeBuilder(td.Time).Format(time.RFC3339))
 		s += fmt.Sprintf("%02X", byte(td.Byte))
 	}
 

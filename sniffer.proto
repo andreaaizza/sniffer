@@ -1,0 +1,14 @@
+syntax = "proto3";
+package sniffer;
+
+option go_package = "github.com/andreaaizza/sniffer";
+
+import "dissector/dissector.proto";
+
+message Result {
+	dissector.Result request  = 1;
+	dissector.Result response = 2;
+}
+message Results {
+	repeated Result results = 1;
+}

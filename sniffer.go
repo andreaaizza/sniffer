@@ -3,10 +3,13 @@ package sniffer
 import (
 	"fmt"
 	"log"
+	sync "sync"
 	"time"
 
 	"github.com/andreaaizza/sniffer/dissector"
 	"github.com/andreaaizza/sniffer/logger"
+	"github.com/andreaaizza/sniffer/util"
+	"google.golang.org/protobuf/proto"
 )
 
 // Modbus data for scanning, most frequent first
@@ -28,105 +31,274 @@ func allModbusFrames() (frames []string) {
 }
 
 type Sniffer struct {
-	logger    *logger.Logger
-	dissector *dissector.Dissector
+	dissector []*dissector.Dissector
+
+	Results Results
+	resMux  sync.Mutex
+
+	stop chan struct{}
 }
 
 // Close closes
 func (s *Sniffer) Close() {
 	// close dissector
-	s.dissector.Close()
+	for _, d := range s.dissector {
+		d.Close()
+	}
+}
 
-	// close logger
-	s.logger.Close()
+type Config struct {
+	Ports []*logger.Config
+}
+
+func (c *Config) PrettyString() (s string) {
+	for _, p := range c.Ports {
+		s += p.PrettyString() + " "
+	}
+	return
 }
 
 // NewModbusRTUSniffer creates and starts a sniffer for Modbus RTU
 // Process runs on go routine, which can be stopped with Sniffer.Close()
 // You need to secure main program does not exit e.g. for{select{}}
-func NewModbusRTUSniffer(c *logger.Config) (s *Sniffer, err error) {
-	// force flushing logger buffer
-	c.FlushAfterSeconds = logger.FlushAfterSecondsModbusRTU
+// if 1 port is provided, then it sniffs half-duples
+// if 2 ports are provided, then is sniffs duplex (Requests on port[0] (tx), Responses/Exception on port[1] (rx)
+func NewModbusRTUSniffer(conf Config) (s *Sniffer, err error) {
+	//func NewModbusRTUSnifferDuplex(txPort *logger.Config, rxPort *logger.Config) (s *Sniffer, err error) {
 
-	s = &Sniffer{}
-
-	// creates and starts logger
-	logger, err := logger.New(c)
-	if err != nil {
-		return
+	if len(conf.Ports) == 0 || len(conf.Ports) > 2 {
+		log.Panic("Sniffer should have either 1 or 2 ports as input")
 	}
-	s.logger = logger
+	isDuplex := len(conf.Ports) == 2
 
-	// creates dissector and connects to logger
-	s.dissector = dissector.New()
-	s.logger.Subscribe(s.dissector.GetConsumer())
+	// create sniffer
+	s = &Sniffer{
+		dissector: make([]*dissector.Dissector, 0),
+	}
+
+	// set logger flushing time // TODO put inside dissectors where logger is created
+	for _, p := range conf.Ports {
+		p.FlushAfterSeconds = logger.LoggerFlushAfterSecondsModbusRTU
+	}
+
+	// creates dissectors
+	if isDuplex {
+		var tx *dissector.Dissector
+		var rx *dissector.Dissector
+
+		// port[0] is tx
+		tx, err = dissector.New(conf.Ports[0], dissector.FilterOnlyModbusRequest{})
+		if err != nil {
+			return
+		}
+		// port[1] is rx
+		rx, err = dissector.New(conf.Ports[1], dissector.FilterOnlyModbusResponseOrException{})
+		if err != nil {
+			return
+		}
+		s.dissector = append(s.dissector, tx)
+		s.dissector = append(s.dissector, rx)
+	} else {
+		var txrx *dissector.Dissector
+
+		// port[0] is both tx and rx
+		txrx, err = dissector.New(conf.Ports[0], dissector.FilterAnyModbus{})
+		if err != nil {
+			return
+		}
+		s.dissector = append(s.dissector, txrx)
+	}
+
+	// results buffers
+	rx := []dissector.Result{}
+	tx := []dissector.Result{}
+
+	if isDuplex {
+		// DUPLEX
+		go func() {
+			for {
+				select {
+				case <-s.stop:
+					return
+
+				// only TX (Requests)
+				case r := <-s.dissector[0].Producer:
+					tx = append(tx, r)
+
+				// only RX (Responses/Exceptions)
+				case r := <-s.dissector[1].Producer:
+					// fill queue
+					rx = append(rx, r)
+
+					s.findRxTxMatch(&rx, &tx)
+				}
+			}
+		}()
+	} else {
+		// HALF DUPLEX
+		go func() {
+			for {
+				select {
+				case <-s.stop:
+					return
+
+				// both Requests and Responses/Exceptions
+				case r := <-s.dissector[0].Producer:
+					adu := r.GetAdu()
+					if adu.IsRequest() {
+						tx = append(tx, r)
+						break
+					} else if adu.IsException() || adu.IsResponse() {
+						rx = append(rx, r)
+
+						s.findRxTxMatch(&rx, &tx)
+
+						break
+					}
+					log.Printf("Unhandled adu received: %v", adu)
+				}
+			}
+		}()
+	}
 
 	return
 }
 
-// GetResults return results, nil on no results
-func (s *Sniffer) GetResults() []*dissector.Result {
-	return s.dissector.Results.GetResults()
+func (s *Sniffer) findRxTxMatch(rx *[]dissector.Result, tx *[]dissector.Result) {
+	// cycle thru received responses, from latest to oldest
+	lenRx := len(*rx)
+	for ri := lenRx - 1; ri >= 0; ri-- {
+		// find first tx with time before rx, in time reverse order
+		lenTx := len(*tx)
+		for ti := lenTx - 1; ti >= 0; ti-- {
+			aduTx := (*tx)[ti].GetAdu()
+			aduRx := (*rx)[ri].GetAdu()
+			aduTxTime := util.TimeBuilder(aduTx.GetTime())
+			aduRxTime := util.TimeBuilder(aduRx.GetTime())
+
+			if aduTxTime.Before(aduRxTime) &&
+				aduTx.GetAddress() == aduRx.GetAddress() &&
+				((aduRx.IsResponse() &&
+					aduRx.GetPduResponse().GetFunctionCode() == aduTx.GetPduRequest().GetFunctionCode()) ||
+					(aduRx.IsException() &&
+						aduRx.GetPduResponseException().GetFunctionExceptionCode()&0x7F == aduTx.GetPduRequest().GetFunctionCode())) {
+				// match found
+				res := Result{Request: &dissector.Result{Adu: aduTx}, Response: &dissector.Result{Adu: aduRx}}
+				s.resMux.Lock()
+				s.Results.Results = append(s.Results.Results, &res)
+				s.resMux.Unlock()
+
+				//log.Print("FOUND: ", res) //LOG
+
+				// remove from tx
+				*tx = append((*tx)[:ti], (*tx)[ti+1:]...)
+				break
+			}
+			// rx has no match found, can be removed
+		}
+	}
+	// remove all rx units: are they either already have a match
+	// they will never have it
+	*rx = (*rx)[:0]
+}
+
+// GetResults return results, and flushes
+func (s *Sniffer) GetResultsAndFlush() (res Results) {
+	s.resMux.Lock()
+	res = s.Results
+	s.flushResults()
+	s.resMux.Unlock()
+	return
+}
+
+func (s *Sniffer) GetResultsCount() int {
+	return len(s.Results.Results)
 }
 
 // FlushResults clear results queue
-func (s *Sniffer) FlushResults() {
-	s.dissector.FlushResults()
+func (s *Sniffer) flushResults() {
+	s.Results.Reset()
 }
 
-// ProtoBytes extracts results as protobuf Marshalled bytes and flushes
-func (s *Sniffer) ProtoBytes() (b []byte, err error) {
-	return s.dissector.ProtoBytes()
+// ProtoBytes extracts results as protobuf Marshalled bytes
+func (s *Sniffer) ProtoBytesAndFlush() (b []byte, err error) {
+	s.resMux.Lock()
+	defer s.resMux.Unlock()
+
+	b, err = proto.Marshal(&s.Results)
+	if err != nil {
+		return
+	}
+	s.flushResults()
+	return
+}
+
+func (r *Result) PrettyString() string {
+	return fmt.Sprint(r.Request.PrettyString(), " -> ", r.Response.PrettyString())
 }
 
 // Scan for Modbus RTU valid serial port configuration
 // connect one 485 line to an active line with traffic to run this
-func ScanPort(port string, speed *int, frame *string, scanForSeconds int, debug bool) *logger.Config {
-	for _, c := range buildConfigs(port, speed, frame) {
+func ScanPort(conf Config, speed *int, frame *string, scanForSeconds int, debug bool) *Config {
+	port := []string{}
+	for _, c := range conf.Ports {
+		port = append(port, c.Port)
+	}
+	configs := buildConfigs(port, speed, frame, debug)
+
+	for _, c := range configs {
 		// create sniffer and try finding results for limited time
-		if debug {
-			c.Debug = true
-		} else {
-			c.Debug = false
-		}
 		err := tryConfig(c, scanForSeconds)
 		if err == nil {
-			return c
+			return &c
+		} else {
+			if debug {
+				log.Print(err)
+			}
 		}
+
 	}
 	return nil
 }
 
 // buildConfigs builds all possible configs with specific port and speed/frame combinations
-func buildConfigs(port string, thisSpeed *int, thisFrame *string) (cc []*logger.Config) {
-	cc = make([]*logger.Config, 0)
+func buildConfigs(port []string, thisSpeed *int, thisFrame *string, debug bool) (confs []Config) {
+	confs = make([]Config, 0)
 	for _, speed := range ModbusSpeeds {
-		if thisSpeed != nil && *thisSpeed == speed {
-			for _, frame := range allModbusFrames() {
-				if thisFrame != nil && *thisFrame == frame {
-					cc = append(cc, &logger.Config{Port: port, Baud: speed, FrameFormat: frame, FlushAfterSeconds: 0})
-				}
+		for _, frame := range allModbusFrames() {
+			if thisSpeed != nil && *thisSpeed != speed {
+				continue
 			}
+			if thisFrame != nil && *thisFrame != frame {
+				continue
+			}
+			conf := Config{}
+			for _, p := range port {
+				conf.Ports = append(conf.Ports, &logger.Config{Port: p, Baud: speed, FrameFormat: frame, FlushAfterSeconds: 0, Debug: debug})
+			}
+			confs = append(confs, conf)
 		}
 	}
 	return
 }
 
 // tryConfig runs a sniffer with specific {config, seconds}, return nil if results are found or specific error
-func tryConfig(c *logger.Config, seconds int) (err error) {
-	log.Printf("Trying %s %d %s...\n", c.Port, c.Baud, c.FrameFormat)
+func tryConfig(c Config, seconds int) (err error) {
+
+	log.Printf("Trying %s", c.PrettyString())
 
 	s, err := NewModbusRTUSniffer(c)
-	defer s.Close()
 	if err != nil {
 		return fmt.Errorf("Cannot create sniffer")
 	}
+	defer s.Close()
+
 	for {
 		select {
 		case <-time.After(time.Duration(seconds) * time.Second):
-			results := s.GetResults()
+			results := s.GetResultsAndFlush()
 
-			if len(results) > 0 {
+			if len(results.GetResults()) > 0 {
 				return
 			} else {
 				return fmt.Errorf("No valid data recevied")

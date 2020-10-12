@@ -1,6 +1,8 @@
 syntax = "proto3";
 package logger;
 
+option go_package = "github.com/andreaaizza/sniffer/logger";
+
 import "google/protobuf/timestamp.proto";
 
 // Logger

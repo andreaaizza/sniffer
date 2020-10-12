@@ -1,6 +1,8 @@
 syntax = "proto3";
 package dissector;
 
+option go_package = "github.com/andreaaizza/sniffer/dissector";
+
 import "google/protobuf/timestamp.proto";
 
 // Dissector
@@ -82,9 +84,9 @@ message PDUResponseException {
 	uint32 functionExceptionCode = 1; // 8bit
 	uint32 exceptionCode = 2;
 }
+// this depends on dissected protocol. Now it only supports Modbus ADU. Can be extended with `oneof`
 message Result {
-	ADU request = 1;
-	ADU reponse = 2;
+	ADU adu = 1;
 }
 message Results {
 	repeated Result results = 1;

@@ -38,13 +38,19 @@ func main() {
 		}
 		line := strings.TrimSuffix(string(lineByte), "\n")
 
+		// do not process empty strings
+		if len(line) == 0 {
+			continue
+		}
+
 		// get single bytes
 		ss := strings.Split(line, " ")
 		b := make([]byte, 0)
 		for _, s := range ss {
 			i, err := strconv.Atoi(s)
 			if err != nil {
-				log.Panic(err)
+				log.Printf("Error decoding [%s], cannot convert [%v] to integer", ss, s)
+				continue
 			}
 			b = append(b, byte(i))
 		}
@@ -52,7 +58,8 @@ func main() {
 		r := sniffer.Results{}
 		err = proto.Unmarshal(b, &r)
 		if err != nil {
-			log.Panic(err)
+			log.Printf("Error decoding [%s], cannot unmarshal bytes [%v] to integer", ss, b)
+			continue
 		}
 
 		for _, rr := range r.GetResults() {

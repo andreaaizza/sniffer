@@ -88,6 +88,3 @@ message PDUResponseException {
 message Result {
 	ADU adu = 1;
 }
-message Results {
-	repeated Result results = 1;
-}

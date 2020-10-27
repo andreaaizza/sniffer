@@ -158,7 +158,7 @@ func (adu *ADU) setCRC(db *DissectorBuffer, position int) (err error) {
 }
 
 func (adu *ADU) PrettyString() (s string) {
-	s = fmt.Sprintf("[%v] %02X", util.TimeBuilder(adu.GetTime()).Format(time.RFC3339), adu.GetAddress())
+	s = fmt.Sprintf("[%v] %02X", util.TimeBuilder(adu.GetTime()).Format(time.RFC3339Nano), adu.GetAddress())
 	if adu.IsRequest() {
 		pdu := adu.GetPduRequest()
 		s += fmt.Sprintf("|REQ%02X|%02X", pdu.GetFunctionCode(), pdu.GetData())

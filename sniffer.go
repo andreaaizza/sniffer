@@ -12,6 +12,9 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// ModbusFlushDataOlderThanSeconds APUs older than 5 seconds are to be flushed
+const ModbusFlushDataOlderThanSeconds uint = 5
+
 // Modbus data for scanning, most frequent first
 var ModbusSpeeds = []int{9600, 19200, 38400, 115200, 57600, 4800, 2400, 1200}
 
@@ -64,7 +67,6 @@ func (c *Config) PrettyString() (s string) {
 // if 1 port is provided, then it sniffs half-duples
 // if 2 ports are provided, then is sniffs duplex (Requests on port[0] (tx), Responses/Exception on port[1] (rx)
 func NewModbusRTUSniffer(conf Config) (s *Sniffer, err error) {
-	//func NewModbusRTUSnifferDuplex(txPort *logger.Config, rxPort *logger.Config) (s *Sniffer, err error) {
 
 	if len(conf.Ports) == 0 || len(conf.Ports) > 2 {
 		log.Panic("Sniffer should have either 1 or 2 ports as input")
@@ -76,28 +78,28 @@ func NewModbusRTUSniffer(conf Config) (s *Sniffer, err error) {
 		dissector: make([]*dissector.Dissector, 0),
 	}
 
-	// set logger flushing time // TODO put inside dissectors where logger is created
+	// set logger flushing time
 	for _, p := range conf.Ports {
 		p.FlushAfterSeconds = logger.LoggerFlushAfterSecondsModbusRTU
 	}
 
 	// creates dissectors
 	if isDuplex {
-		var tx *dissector.Dissector
-		var rx *dissector.Dissector
+		var txDiss *dissector.Dissector
+		var rxDiss *dissector.Dissector
 
 		// port[0] is tx
-		tx, err = dissector.New(conf.Ports[0], dissector.FilterOnlyModbusRequest{})
+		txDiss, err = dissector.New(conf.Ports[0], dissector.FilterOnlyModbusRequest{})
 		if err != nil {
 			return
 		}
 		// port[1] is rx
-		rx, err = dissector.New(conf.Ports[1], dissector.FilterOnlyModbusResponseOrException{})
+		rxDiss, err = dissector.New(conf.Ports[1], dissector.FilterOnlyModbusResponseOrException{})
 		if err != nil {
 			return
 		}
-		s.dissector = append(s.dissector, tx)
-		s.dissector = append(s.dissector, rx)
+		s.dissector = append(s.dissector, txDiss)
+		s.dissector = append(s.dissector, rxDiss)
 	} else {
 		var txrx *dissector.Dissector
 
@@ -164,13 +166,11 @@ func NewModbusRTUSniffer(conf Config) (s *Sniffer, err error) {
 	return
 }
 
-func (s *Sniffer) findRxTxMatch(rx *[]dissector.Result, tx *[]dissector.Result) {
-	// cycle thru received responses, from latest to oldest
-	lenRx := len(*rx)
-	for ri := lenRx - 1; ri >= 0; ri-- {
-		// find first tx with time before rx, in time reverse order
-		lenTx := len(*tx)
-		for ti := lenTx - 1; ti >= 0; ti-- {
+func (s *Sniffer) findOneMatch(rx *[]dissector.Result, tx *[]dissector.Result) (found bool) {
+	// for each REQ in time ascending order
+	for ti := range *tx {
+		// find the nearest (in time) future REX/EXC
+		for ri := range *rx {
 			aduTx := (*tx)[ti].GetAdu()
 			aduRx := (*rx)[ri].GetAdu()
 			aduTxTime := util.TimeBuilder(aduTx.GetTime())
@@ -190,16 +190,29 @@ func (s *Sniffer) findRxTxMatch(rx *[]dissector.Result, tx *[]dissector.Result) 
 
 				//log.Print("FOUND: ", res) //LOG
 
-				// remove from tx
+				// remove from tx and rx
 				*tx = append((*tx)[:ti], (*tx)[ti+1:]...)
-				break
+				*rx = append((*rx)[:ri], (*rx)[ri+1:]...)
+				return true
 			}
-			// rx has no match found, can be removed
+		}
+		// req (tx) has no matching res (rx)
+	}
+	return false
+}
+
+func (s *Sniffer) findRxTxMatch(rx *[]dissector.Result, tx *[]dissector.Result) {
+	// flush old data first
+	now := time.Now()
+	flushOldData(rx, now)
+	flushOldData(tx, now)
+
+	// for each REQ find matching RES/EXC
+	for {
+		if s.findOneMatch(rx, tx) == false {
+			break
 		}
 	}
-	// remove all rx units: are they either already have a match
-	// they will never have it
-	*rx = (*rx)[:0]
 }
 
 // GetResults return results, and flushes
@@ -305,4 +318,15 @@ func tryConfig(c Config, seconds int) (err error) {
 			}
 		}
 	}
+}
+
+func flushOldData(r *[]dissector.Result, now time.Time) {
+	count := 0
+	for i := len(*r) - 1; i >= 0; i-- {
+		if now.After((*r)[0].GetAdu().GetTimeTime().Add(time.Duration(ModbusFlushDataOlderThanSeconds) * time.Second)) {
+			*r = append((*r)[:i], (*r)[i+1:]...)
+			count++
+		}
+	}
+	log.Printf("Flushed %d ADUs from buffer", count)
 }
